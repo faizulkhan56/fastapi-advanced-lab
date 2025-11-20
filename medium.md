@@ -75,16 +75,21 @@ FastAPI middleware follows the ASGI (Asynchronous Server Gateway Interface) stan
 
 ### Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│              Middleware Execution Flow                   │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  Request → Rate Limit MW → Timing MW → Route Handler    │
-│                                                          │
-│  Response ← Rate Limit MW ← Timing MW ← Route Handler   │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    A[Client Request] --> B[Rate Limit Middleware]
+    B -->|Check IP & Allow| C[Timing Middleware]
+    C -->|Start Timer| D[Route Handler]
+    D -->|Process Request| E[Response Generated]
+    E -->|Calculate Time| C
+    C -->|Add X-Process-Time Header| B
+    B -->|Return Response| A
+    
+    style A fill:#e1f5ff
+    style E fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#fff4e1
+    style D fill:#e8f5e9
 ```
 
 ### Code Explanation
@@ -169,24 +174,22 @@ This middleware:
 
 ### Sequence Diagram
 
-```
-Client          Rate Limit MW      Timing MW         Route Handler
-  │                  │                 │                    │
-  │───Request───────>│                 │                    │
-  │                  │───Check IP─────>│                    │
-  │                  │<──Allow─────────│                    │
-  │                  │                 │                    │
-  │                  │                 │───Request──────────>│
-  │                  │                 │                    │
-  │                  │                 │                    │───Process───┐
-  │                  │                 │                    │<──Response───┘
-  │                  │                 │                    │
-  │                  │                 │<──Response─────────│
-  │                  │                 │                    │
-  │                  │                 │───Add Header───────│
-  │                  │                 │                    │
-  │<──Response───────│<────────────────│                    │
-  │  (with X-Process-Time)            │                    │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant RateLimitMW as Rate Limit MW
+    participant TimingMW as Timing MW
+    participant RouteHandler as Route Handler
+    
+    Client->>RateLimitMW: Request
+    RateLimitMW->>RateLimitMW: Check IP
+    RateLimitMW->>TimingMW: Allow & Forward
+    TimingMW->>RouteHandler: Request
+    RouteHandler->>RouteHandler: Process
+    RouteHandler->>TimingMW: Response
+    TimingMW->>TimingMW: Add X-Process-Time Header
+    TimingMW->>RateLimitMW: Response
+    RateLimitMW->>Client: Response (with X-Process-Time)
 ```
 
 ### Testing
@@ -238,22 +241,29 @@ URL path versioning is the most explicit and widely understood approach.
 
 ### Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│              Versioning Architecture                    │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  Main App (myapp/main.py)                               │
-│  ├── Includes v1 router with prefix /v1                 │
-│  └── Includes v2 router with prefix /v2                 │
-│                                                          │
-│  v1/routes.py                                            │
-│  └── GET /items/{item_id} → Legacy format               │
-│                                                          │
-│  v2/routes.py                                            │
-│  └── GET /items/{item_id} → Enhanced format             │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "Main App (myapp/main.py)"
+        Main[FastAPI App]
+        Main --> V1Router[Includes v1 router<br/>prefix: /v1]
+        Main --> V2Router[Includes v2 router<br/>prefix: /v2]
+    end
+    
+    subgraph "v1/routes.py"
+        V1Router --> V1Endpoint[GET /items/&#123;item_id&#125;<br/>Legacy format]
+    end
+    
+    subgraph "v2/routes.py"
+        V2Router --> V2Endpoint[GET /items/&#123;item_id&#125;<br/>Enhanced format]
+    end
+    
+    Client[Client Request] --> Main
+    
+    style Main fill:#e1f5ff
+    style V1Router fill:#fff4e1
+    style V2Router fill:#e8f5e9
+    style V1Endpoint fill:#fff4e1
+    style V2Endpoint fill:#e8f5e9
 ```
 
 ### Code Explanation
@@ -324,41 +334,51 @@ async def read_item_v2(item_id: int):
 
 ### Module Dependency Diagram
 
-```
-myapp/
-├── main.py
-│   ├── imports v1.routes
-│   ├── imports v2.routes
-│   └── includes routers with prefixes
-│
-├── v1/
-│   └── routes.py
-│       └── defines APIRouter for v1
-│
-└── v2/
-    └── routes.py
-        └── defines APIRouter for v2
+```mermaid
+graph TD
+    subgraph "myapp/"
+        Main[main.py]
+        Main -->|imports| V1Routes[v1.routes]
+        Main -->|imports| V2Routes[v2.routes]
+        Main -->|includes with prefix /v1| V1Router[APIRouter v1]
+        Main -->|includes with prefix /v2| V2Router[APIRouter v2]
+        
+        subgraph "v1/"
+            V1Routes --> V1Router
+        end
+        
+        subgraph "v2/"
+            V2Routes --> V2Router
+        end
+    end
+    
+    style Main fill:#e1f5ff
+    style V1Routes fill:#fff4e1
+    style V2Routes fill:#e8f5e9
+    style V1Router fill:#fff4e1
+    style V2Router fill:#e8f5e9
 ```
 
 ### Request Flow
 
-```
-Client Request: GET /v1/items/1
-    │
-    ▼
-Main Router (myapp/main.py)
-    │
-    ▼
-Version Router Selection
-    │
-    ├── /v1/* → v1.routes.router
-    └── /v2/* → v2.routes.router
-    │
-    ▼
-v1/routes.py → read_item_v1()
-    │
-    ▼
-Response: {"version": "v1", "item_id": 1, ...}
+```mermaid
+flowchart TD
+    A[Client Request:<br/>GET /v1/items/1] --> B[Main Router<br/>myapp/main.py]
+    B --> C{Version Router<br/>Selection}
+    C -->|/v1/*| D[v1.routes.router]
+    C -->|/v2/*| E[v2.routes.router]
+    D --> F[read_item_v1&#40;&#41;]
+    E --> G[read_item_v2&#40;&#41;]
+    F --> H[Response:<br/>&#123;version: v1, item_id: 1&#125;]
+    G --> I[Response:<br/>&#123;version: v2, item_id: 1&#125;]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#ffe0b2
+    style D fill:#fff4e1
+    style E fill:#e8f5e9
+    style H fill:#e1f5ff
+    style I fill:#e1f5ff
 ```
 
 ### Testing
@@ -430,27 +450,36 @@ docker-compose up --build
 
 ### Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────┐
-│         Database Lab Architecture                       │
-├─────────────────────────────────────────────────────────┤
-│                                                          │
-│  FastAPI Routes                                         │
-│  ├── Depends(get_db) → Dependency Injection            │
-│  └── Uses Pydantic schemas for validation              │
-│                                                          │
-│  SQLAlchemy ORM                                         │
-│  ├── Todo Model (models.py)                            │
-│  ├── Session Management (database.py)                  │
-│  └── Query Builder                                      │
-│                                                          │
-│  SQLite Database                                        │
-│  └── test.db (persistent storage)                       │
-│                                                          │
-│  Background Tasks                                       │
-│  └── Async processing after response                   │
-│                                                          │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "FastAPI Routes"
+        Routes[Route Handlers]
+        Routes -->|Depends| DI[Dependency Injection<br/>get_db&#40;&#41;]
+        Routes -->|Uses| Pydantic[Pydantic Schemas<br/>Validation]
+    end
+    
+    subgraph "SQLAlchemy ORM"
+        DI --> Session[Session Management<br/>database.py]
+        Session --> Model[Todo Model<br/>models.py]
+        Session --> Query[Query Builder]
+    end
+    
+    subgraph "SQLite Database"
+        Query --> DB[(test.db<br/>Persistent Storage)]
+    end
+    
+    subgraph "Background Tasks"
+        Routes --> BG[Async Processing<br/>After Response]
+    end
+    
+    style Routes fill:#e1f5ff
+    style DI fill:#fff4e1
+    style Pydantic fill:#fff4e1
+    style Session fill:#e8f5e9
+    style Model fill:#e8f5e9
+    style Query fill:#e8f5e9
+    style DB fill:#f3e5f5
+    style BG fill:#ffe0b2
 ```
 
 ### Code Explanation
@@ -577,39 +606,36 @@ Background tasks run **after** the response is sent, perfect for:
 
 ### Sequence Diagram - CRUD Operation
 
-```
-Client          Route Handler      get_db()        SQLAlchemy      SQLite DB
-  │                  │                 │                │              │
-  │───POST /todos/───>│                 │                │              │
-  │                  │                 │                │              │
-  │                  │───Depends──────>│                │              │
-  │                  │                 │                │              │
-  │                  │                 │───Session──────>│              │
-  │                  │                 │                │              │
-  │                  │                 │                │───INSERT─────>│
-  │                  │                 │                │              │
-  │                  │                 │                │<──Result─────│
-  │                  │                 │                │              │
-  │                  │                 │<──Session──────│              │
-  │                  │                 │                │              │
-  │                  │<──Todo Object───│                │              │
-  │                  │                 │                │              │
-  │<──JSON Response──│                 │                │              │
-  │                  │                 │                │              │
-  │                  │───Close Session─>│                │              │
+```mermaid
+sequenceDiagram
+    participant Client
+    participant RouteHandler as Route Handler
+    participant GetDB as get_db()
+    participant SQLAlchemy
+    participant SQLiteDB as SQLite DB
+    
+    Client->>RouteHandler: POST /todos/
+    RouteHandler->>GetDB: Depends(get_db)
+    GetDB->>SQLAlchemy: Create Session
+    SQLAlchemy->>SQLiteDB: INSERT INTO todos
+    SQLiteDB->>SQLAlchemy: Result
+    SQLAlchemy->>GetDB: Session with Todo Object
+    GetDB->>RouteHandler: Todo Object
+    RouteHandler->>Client: JSON Response
+    RouteHandler->>GetDB: Close Session
+    GetDB->>SQLAlchemy: Close Connection
 ```
 
 ### Database Schema
 
-```
-┌─────────────────┐
-│     todos       │
-├─────────────────┤
-│ id (PK)         │  INTEGER PRIMARY KEY
-│ title           │  VARCHAR
-│ description     │  VARCHAR
-│ completed       │  BOOLEAN DEFAULT FALSE
-└─────────────────┘
+```mermaid
+erDiagram
+    TODOS {
+        int id PK "PRIMARY KEY"
+        string title
+        string description
+        boolean completed "DEFAULT FALSE"
+    }
 ```
 
 ### Testing
