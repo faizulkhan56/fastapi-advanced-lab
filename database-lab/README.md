@@ -20,7 +20,8 @@ database-lab/
 ├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
-├── test.db          # (created at runtime)
+├── data/             # (created at runtime, contains test.db)
+│   └── test.db       # (SQLite database file)
 └── venv/             # (created by you, not included in the zip)
 ```
 
@@ -172,7 +173,7 @@ From `database-lab` with venv active:
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The database file (`test.db`) will be created automatically on first run.
+The database file (`data/test.db`) will be created automatically on first run in the `data/` directory.
 
 ---
 
@@ -212,7 +213,7 @@ docker stop database-lab
 docker rm database-lab
 ```
 
-**Note:** The database file is persisted in the host directory, so data survives container restarts.
+**Note:** The database directory (`data/`) is persisted via volume mount, so data survives container restarts. The database file will be created at `data/test.db`.
 
 ---
 

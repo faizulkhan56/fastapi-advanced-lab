@@ -12,4 +12,4 @@ class Todo(TodoBase):
     id: int
 
     class Config:
-        orm_mode = True
+        from_attributes = True  # Pydantic V2: renamed from orm_mode

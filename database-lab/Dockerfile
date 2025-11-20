@@ -5,6 +5,9 @@ WORKDIR /app
 # Install curl for healthcheck
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
+# Create data directory for database with proper permissions
+RUN mkdir -p /app/data && chmod 777 /app/data
+
 # Copy requirements first for better caching
 COPY requirements.txt .
 
