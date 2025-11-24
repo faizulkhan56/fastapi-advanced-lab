@@ -14,9 +14,11 @@ This article provides a complete walkthrough of three independent lab projects, 
 2. [Lab 1: Middleware - Timing and Rate Limiting](#lab-1-middleware-timing-and-rate-limiting)
 3. [Lab 2: API Versioning](#lab-2-api-versioning)
 4. [Lab 3: Database Integration with Dependency Injection](#lab-3-database-integration-with-dependency-injection)
-5. [Deployment Strategies](#deployment-strategies)
-6. [Best Practices and Patterns](#best-practices-and-patterns)
-7. [Conclusion](#conclusion)
+5. [Logging and Exception Handling](#logging-and-exception-handling)
+6. [Deployment Strategies](#deployment-strategies)
+7. [Comprehensive Testing Guide](#comprehensive-testing-guide)
+8. [Best Practices and Patterns](#best-practices-and-patterns)
+9. [Conclusion](#conclusion)
 
 ---
 
@@ -36,6 +38,11 @@ Each lab is self-contained with its own dependencies, making it easy to understa
 fastapi-advanced-lab/
 ├── middleware-lab/
 │   ├── main.py
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── logger.py
+│   │   └── exception.py
+│   ├── logs/              # Generated at runtime
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── docker-compose.yml
@@ -44,6 +51,11 @@ fastapi-advanced-lab/
 │   │   ├── main.py
 │   │   ├── v1/routes.py
 │   │   └── v2/routes.py
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── logger.py
+│   │   └── exception.py
+│   ├── logs/              # Generated at runtime
 │   ├── requirements.txt
 │   ├── Dockerfile
 │   └── docker-compose.yml
@@ -52,6 +64,12 @@ fastapi-advanced-lab/
     ├── database.py
     ├── models.py
     ├── schemas.py
+    ├── utils/
+    │   ├── __init__.py
+    │   ├── logger.py
+    │   └── exception.py
+    ├── data/              # Database storage
+    ├── logs/              # Generated at runtime
     ├── requirements.txt
     ├── Dockerfile
     └── docker-compose.yml
@@ -680,6 +698,270 @@ The database file is persisted via volume mount.
 
 ---
 
+## Logging and Exception Handling
+
+### Theoretical Foundation
+
+**Logging** and **Exception Handling** are critical components of production-ready applications. They provide:
+
+- **Observability**: Track application behavior and diagnose issues
+- **Debugging**: Detailed information about errors and execution flow
+- **Monitoring**: Metrics and patterns for performance analysis
+- **Audit Trail**: Record of all operations for compliance and troubleshooting
+
+### Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "Application Layer"
+        App[FastAPI Application]
+        Routes[Route Handlers]
+        MW[Middleware]
+    end
+    
+    subgraph "Logging System"
+        Logger[Logger Utility]
+        LogFile[Log Files<br/>Timestamped]
+        Console[Console Output]
+    end
+    
+    subgraph "Exception System"
+        CustomExc[CustomException]
+        ExcHandler[Exception Handler]
+        ErrorLog[Error Logging]
+    end
+    
+    App --> Routes
+    App --> MW
+    Routes --> Logger
+    MW --> Logger
+    Routes --> CustomExc
+    MW --> CustomExc
+    Logger --> LogFile
+    Logger --> Console
+    CustomExc --> ExcHandler
+    CustomExc --> ErrorLog
+    ExcHandler --> Logger
+    
+    style Logger fill:#e1f5ff
+    style CustomExc fill:#fff4e1
+    style LogFile fill:#e8f5e9
+    style Console fill:#e8f5e9
+```
+
+### Logger Implementation
+
+Our logger utility (`utils/logger.py`) provides a centralized logging solution:
+
+```python
+import os
+import sys
+import logging
+from datetime import datetime
+from pathlib import Path
+
+# Get the project root directory
+PROJECT_ROOT = Path(__file__).parent.parent
+
+# Create logs directory
+LOG_DIR = PROJECT_ROOT / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+# Create log file with timestamp
+LOG_FILE = f"{datetime.now().strftime('%m_%d_%Y_%H_%M_%S')}.log"
+LOG_FILE_PATH = LOG_DIR / LOG_FILE
+
+# Configure logging
+logging.basicConfig(
+    filename=str(LOG_FILE_PATH),
+    format="[ %(asctime)s ] %(lineno)d %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+# Also log to console
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter(
+    "[ %(asctime)s ] %(lineno)d %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+console_handler.setFormatter(console_formatter)
+
+# Get root logger and add console handler
+logger = logging.getLogger()
+logger.addHandler(console_handler)
+logger.setLevel(logging.INFO)
+```
+
+**Key Features:**
+
+1. **Dual Output**: Logs to both file and console simultaneously
+2. **Timestamped Files**: Each application run creates a new log file
+3. **Structured Format**: Includes timestamp, line number, module, level, and message
+4. **Auto Directory Creation**: Creates `logs/` directory if it doesn't exist
+5. **Cross-Platform**: Uses `pathlib.Path` for Windows/Linux/macOS compatibility
+
+**Log Format:**
+```
+[ 2024-01-15 10:30:45 ] 25 main - INFO - Application started
+[ 2024-01-15 10:30:46 ] 30 middleware - WARNING - Rate limit exceeded for IP: 192.168.1.1
+[ 2024-01-15 10:30:47 ] 45 database - ERROR - Database connection failed
+```
+
+### Custom Exception Implementation
+
+Our custom exception class (`utils/exception.py`) provides detailed error information:
+
+```python
+import sys
+import traceback
+from typing import Optional
+from .logger import logger
+
+
+class CustomException(Exception):
+    """
+    Custom exception class to provide detailed error information.
+    """
+    
+    def __init__(self, error_message: str, error_detail: Optional[sys] = None):
+        super().__init__(error_message)
+        self.error_message = self._generate_detailed_error_message(
+            error_message, error_detail
+        )
+
+    @staticmethod
+    def _generate_detailed_error_message(
+        error_message: str, error_detail: Optional[sys]
+    ) -> str:
+        exc_type, exc_obj, exc_tb = sys.exc_info()
+        
+        if exc_tb is not None:
+            file_name = exc_tb.tb_frame.f_code.co_filename
+            line_number = exc_tb.tb_lineno
+            
+            detailed_message = (
+                f"\nError occurred in Python script:"
+                f"\n→ File: {file_name}"
+                f"\n→ Line number: {line_number}"
+                f"\n→ Error message: {str(error_message)}"
+            )
+        else:
+            detailed_message = (
+                f"\nError occurred in Python script:"
+                f"\n→ Error message: {str(error_message)}"
+            )
+        
+        logger.error(detailed_message)
+        return detailed_message
+```
+
+**Key Features:**
+
+1. **Automatic Logging**: Errors are automatically logged when raised
+2. **Detailed Information**: Includes file name, line number, and error message
+3. **Traceback Support**: Extracts traceback information when available
+4. **FastAPI Integration**: Works seamlessly with FastAPI exception handlers
+
+### Integration in FastAPI
+
+**1. Global Exception Handler:**
+
+```python
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
+from utils.logger import logger
+from utils.exception import CustomException
+
+app = FastAPI()
+
+@app.exception_handler(CustomException)
+async def custom_exception_handler(request, exc: CustomException):
+    logger.error(f"CustomException raised: {str(exc)}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc), "error_type": "CustomException"}
+    )
+```
+
+**2. Using Logger in Routes:**
+
+```python
+from utils.logger import logger
+
+@app.get("/todos/{todo_id}")
+def read_todo(todo_id: int, db: Session = Depends(get_db)):
+    try:
+        logger.info(f"Reading todo with ID: {todo_id}")
+        todo = db.query(models.Todo).filter(models.Todo.id == todo_id).first()
+        if not todo:
+            logger.warning(f"Todo with ID {todo_id} not found")
+            raise HTTPException(status_code=404, detail="Todo not found")
+        logger.info(f"Todo {todo_id} retrieved successfully")
+        return todo
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reading todo {todo_id}: {str(e)}")
+        raise CustomException(f"Error reading todo: {str(e)}", sys)
+```
+
+**3. Using Logger in Middleware:**
+
+```python
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    try:
+        client_ip = request.client.host
+        # ... rate limiting logic ...
+        if len(requests[client_ip]) >= RATE_LIMIT:
+            logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+            return JSONResponse(status_code=429, ...)
+        logger.info(f"Request from IP: {client_ip}")
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        logger.error(f"Error in rate_limit middleware: {str(e)}")
+        raise CustomException(f"Rate limit middleware error: {str(e)}", sys)
+```
+
+### Log Levels
+
+Our implementation uses standard Python logging levels:
+
+- **DEBUG**: Detailed information for diagnosing problems
+- **INFO**: General informational messages (default level)
+- **WARNING**: Warning messages for potential issues
+- **ERROR**: Error messages for failures
+- **CRITICAL**: Critical errors that may cause application failure
+
+### Log File Management
+
+- **Location**: Each lab has its own `logs/` directory
+- **Naming**: Files are timestamped: `MM_DD_YYYY_HH_MM_SS.log`
+- **Rotation**: Each application run creates a new log file
+- **Persistence**: Logs persist across container restarts (if volumes are configured)
+- **Git Ignore**: Log files are excluded from version control
+
+### Benefits
+
+1. **Debugging**: Easy to trace issues with detailed logs
+2. **Monitoring**: Track application behavior and performance
+3. **Error Tracking**: Detailed exception information for troubleshooting
+4. **Audit Trail**: Complete record of all operations
+5. **Production Ready**: Structured logging suitable for production environments
+
+### Best Practices
+
+1. **Log at Appropriate Levels**: Use INFO for normal operations, WARNING for potential issues, ERROR for failures
+2. **Include Context**: Add relevant information (IDs, IPs, timestamps) to log messages
+3. **Structured Logging**: Use consistent format across all logs
+4. **Error Handling**: Always log exceptions before re-raising or handling
+5. **Performance**: Avoid logging in tight loops or high-frequency operations
+
+---
+
 ## Deployment Strategies
 
 ### Development: Uvicorn with Auto-Reload
@@ -745,6 +1027,550 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 5. **Monitoring**: Add APM tools (Sentry, DataDog, etc.)
 6. **Logging**: Structured logging with proper levels
 7. **Security**: HTTPS, CORS configuration, authentication
+
+---
+
+## Comprehensive Testing Guide
+
+This section provides a complete testing guide for all three labs, including endpoint testing, log verification, and exception handling validation.
+
+### Testing Setup
+
+Before testing, ensure all labs are running:
+
+**Middleware Lab:**
+```bash
+cd middleware-lab
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Or with Docker: docker-compose up
+```
+
+**Versioning Lab:**
+```bash
+cd versioning-lab
+uvicorn myapp.main:app --reload --host 0.0.0.0 --port 8000
+# Or with Docker: docker-compose up
+```
+
+**Database Lab:**
+```bash
+cd database-lab
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+# Or with Docker: docker-compose up
+```
+
+### Lab 1: Middleware Lab Testing
+
+#### Test Case 1: Basic Request with Logging
+
+**Request:**
+```bash
+curl http://localhost:8000/test
+```
+
+**Expected Response:**
+```json
+{
+  "message": "Request successful"
+}
+```
+
+**Log Verification:**
+1. Check console output for:
+   ```
+   [ timestamp ] line_number main - INFO - Test endpoint called
+   [ timestamp ] line_number middleware - INFO - Request to /test took X.XXXXXX seconds
+   ```
+
+2. Check log file in `middleware-lab/logs/`:
+   ```bash
+   tail -f middleware-lab/logs/*.log
+   ```
+
+**Postman:**
+- Method: GET
+- URL: `http://localhost:8000/test`
+- Headers: Check for `X-Process-Time` header in response
+
+#### Test Case 2: Rate Limiting with Logging
+
+**Request Sequence:**
+```bash
+# Send 6 requests rapidly
+for i in {1..6}; do curl -i http://localhost:8000/test; echo; done
+```
+
+**Expected Behavior:**
+- First 5 requests: `200 OK`
+- 6th request: `429 Too Many Requests`
+
+**Log Verification:**
+Check logs for:
+```
+[ timestamp ] middleware - INFO - Request from IP: 127.0.0.1, Remaining requests: 4
+[ timestamp ] middleware - INFO - Request from IP: 127.0.0.1, Remaining requests: 3
+...
+[ timestamp ] middleware - WARNING - Rate limit exceeded for IP: 127.0.0.1
+```
+
+**Postman Collection Runner:**
+1. Create collection with GET /test request
+2. Set iterations to 6
+3. Set delay to 0ms
+4. Run collection
+5. Verify 6th request returns 429
+
+#### Test Case 3: Timing Header Verification
+
+**Request:**
+```bash
+curl -i http://localhost:8000/test
+```
+
+**Verification:**
+- Response header: `X-Process-Time: <float>`
+- Log file contains timing information
+
+#### Test Case 4: Exception Handling
+
+**Test Error Scenario:**
+Modify the test endpoint temporarily to raise an exception, then verify:
+1. Exception is logged
+2. CustomException handler returns proper response
+3. Error details are in log file
+
+### Lab 2: Versioning Lab Testing
+
+#### Test Case 1: Root Endpoint with Logging
+
+**Request:**
+```bash
+curl http://localhost:8000/
+```
+
+**Expected Response:**
+```json
+{
+  "available_versions": ["v1", "v2"],
+  "current_version": "v2",
+  "deprecated_versions": ["v1"]
+}
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Versioning Lab application started
+[ timestamp ] main - INFO - Versioned routers included successfully
+[ timestamp ] main - INFO - Root endpoint called
+```
+
+#### Test Case 2: Version 1 Endpoint
+
+**Request:**
+```bash
+curl http://localhost:8000/v1/items/1
+```
+
+**Expected Response:**
+```json
+{
+  "version": "v1",
+  "item_id": 1,
+  "detail": "Data from v1"
+}
+```
+
+**Log Verification:**
+```
+[ timestamp ] routes - INFO - V1 endpoint called for item_id: 1
+```
+
+#### Test Case 3: Version 2 Endpoint
+
+**Request:**
+```bash
+curl http://localhost:8000/v2/items/1
+```
+
+**Expected Response:**
+```json
+{
+  "version": "v2",
+  "item_id": 2,
+  "detail": "Enhanced data from v2"
+}
+```
+
+**Log Verification:**
+```
+[ timestamp ] routes - INFO - V2 endpoint called for item_id: 1
+```
+
+#### Test Case 4: Invalid Version (Exception Testing)
+
+**Request:**
+```bash
+curl http://localhost:8000/v3/items/1
+```
+
+**Expected Response:**
+```json
+{
+  "detail": "Not Found"
+}
+```
+
+**Log Verification:**
+- Check for 404 errors in logs
+- Verify exception handling works correctly
+
+#### Postman Collection for Versioning Lab
+
+Create a collection with:
+1. GET / - Root endpoint
+2. GET /v1/items/{item_id} - Version 1
+3. GET /v2/items/{item_id} - Version 2
+4. GET /v3/items/{item_id} - Invalid version (should fail)
+
+### Lab 3: Database Lab Testing
+
+#### Test Case 1: Create Todo with Logging
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8000/todos/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Test Todo",
+    "description": "Testing logging",
+    "completed": false
+  }'
+```
+
+**Expected Response:**
+```json
+{
+  "id": 1,
+  "title": "Test Todo",
+  "description": "Testing logging",
+  "completed": false
+}
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Database Lab application started
+[ timestamp ] main - INFO - Database tables created successfully
+[ timestamp ] main - INFO - Creating todo: Test Todo
+[ timestamp ] main - INFO - Todo created successfully with ID: 1
+```
+
+#### Test Case 2: Read Todo
+
+**Request:**
+```bash
+curl http://localhost:8000/todos/1
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Reading todo with ID: 1
+[ timestamp ] main - INFO - Todo 1 retrieved successfully
+```
+
+#### Test Case 3: Update Todo
+
+**Request:**
+```bash
+curl -X PUT "http://localhost:8000/todos/1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Updated Todo",
+    "description": "Updated description",
+    "completed": true
+  }'
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Updating todo with ID: 1
+[ timestamp ] main - INFO - Todo 1 updated successfully
+```
+
+#### Test Case 4: Delete Todo
+
+**Request:**
+```bash
+curl -X DELETE http://localhost:8000/todos/1
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Deleting todo with ID: 1
+[ timestamp ] main - INFO - Todo 1 deleted successfully
+```
+
+#### Test Case 5: List All Todos
+
+**Request:**
+```bash
+curl http://localhost:8000/todos/
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Reading all todos
+[ timestamp ] main - INFO - Retrieved X todos
+```
+
+#### Test Case 6: Background Task with Logging
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8000/todos/background/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Background Task",
+    "description": "Testing background processing",
+    "completed": false
+  }'
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - INFO - Creating todo with background processing: Background Task
+[ timestamp ] main - INFO - Todo created with ID: X, background task scheduled
+[ timestamp ] main - INFO - Processing todo in background: Background Task
+[ timestamp ] main - INFO - Background processing completed for todo: Background Task
+```
+
+#### Test Case 7: Error Handling - Not Found
+
+**Request:**
+```bash
+curl http://localhost:8000/todos/999
+```
+
+**Expected Response:**
+```json
+{
+  "detail": "Todo not found"
+}
+```
+
+**Log Verification:**
+```
+[ timestamp ] main - WARNING - Todo with ID 999 not found
+```
+
+#### Test Case 8: Error Handling - Validation Error
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8000/todos/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Invalid"
+  }'
+```
+
+**Expected Response:**
+```json
+{
+  "detail": [
+    {
+      "loc": ["body", "description"],
+      "msg": "field required",
+      "type": "value_error.missing"
+    }
+  ]
+}
+```
+
+**Log Verification:**
+- Check for validation errors in logs
+- Verify Pydantic validation is working
+
+### Comprehensive Postman Collection
+
+Create a complete Postman collection with all endpoints:
+
+**Middleware Lab Collection:**
+1. GET /test - Basic test
+2. GET /test (6x) - Rate limiting test
+3. GET /test - Timing verification
+
+**Versioning Lab Collection:**
+1. GET / - Root endpoint
+2. GET /v1/items/1 - Version 1
+3. GET /v2/items/1 - Version 2
+4. GET /v3/items/1 - Invalid version
+
+**Database Lab Collection:**
+1. POST /todos/ - Create todo
+2. GET /todos/{id} - Read todo
+3. GET /todos/ - List all todos
+4. PUT /todos/{id} - Update todo
+5. DELETE /todos/{id} - Delete todo
+6. POST /todos/background/ - Background task
+7. GET /todos/999 - Not found error
+8. POST /todos/ (invalid) - Validation error
+
+### Log File Analysis
+
+**Viewing Logs:**
+
+```bash
+# Middleware Lab
+tail -f middleware-lab/logs/*.log
+
+# Versioning Lab
+tail -f versioning-lab/logs/*.log
+
+# Database Lab
+tail -f database-lab/logs/*.log
+```
+
+**Searching Logs:**
+
+```bash
+# Find all errors
+grep "ERROR" database-lab/logs/*.log
+
+# Find all warnings
+grep "WARNING" middleware-lab/logs/*.log
+
+# Find specific endpoint calls
+grep "Reading todo" database-lab/logs/*.log
+```
+
+**Log File Structure:**
+```
+logs/
+└── 01_15_2024_10_30_45.log
+    ├── Application startup logs
+    ├── Request/response logs
+    ├── Error logs
+    └── Background task logs
+```
+
+### Exception Testing
+
+**Test CustomException:**
+
+1. **Trigger an exception** in any endpoint
+2. **Verify**:
+   - Exception is logged with full details
+   - FastAPI exception handler returns proper JSON response
+   - Error includes file name and line number
+   - Response status code is 500
+
+**Example Exception Test:**
+
+Modify an endpoint to raise CustomException:
+```python
+@app.get("/test-error")
+async def test_error():
+    raise CustomException("This is a test error", sys)
+```
+
+**Expected Response:**
+```json
+{
+  "detail": "\nError occurred in Python script:\n→ File: ...\n→ Line number: X\n→ Error message: This is a test error",
+  "error_type": "CustomException"
+}
+```
+
+### Swagger UI Testing
+
+All labs include Swagger UI for interactive testing:
+
+1. **Navigate to**: `http://localhost:8000/docs`
+2. **Test endpoints** directly in the browser
+3. **View** request/response schemas
+4. **Verify** logging in console and log files
+
+### Performance Testing with Logging
+
+**Load Testing:**
+
+```bash
+# Install Apache Bench
+ab -n 100 -c 10 http://localhost:8000/test
+
+# Monitor logs in real-time
+tail -f middleware-lab/logs/*.log
+```
+
+**Verify:**
+- Request timing in logs
+- Rate limiting behavior
+- Error rates
+- Performance metrics
+
+### Integration Testing Script
+
+Create a test script to verify all endpoints and logging:
+
+```python
+import requests
+import time
+
+BASE_URL = "http://localhost:8000"
+
+def test_middleware_lab():
+    print("Testing Middleware Lab...")
+    response = requests.get(f"{BASE_URL}/test")
+    assert response.status_code == 200
+    assert "X-Process-Time" in response.headers
+    print("✓ Middleware Lab tests passed")
+
+def test_versioning_lab():
+    print("Testing Versioning Lab...")
+    response = requests.get(f"{BASE_URL}/")
+    assert response.status_code == 200
+    assert "available_versions" in response.json()
+    print("✓ Versioning Lab tests passed")
+
+def test_database_lab():
+    print("Testing Database Lab...")
+    # Create todo
+    todo_data = {
+        "title": "Test",
+        "description": "Test description",
+        "completed": False
+    }
+    response = requests.post(f"{BASE_URL}/todos/", json=todo_data)
+    assert response.status_code == 200
+    todo_id = response.json()["id"]
+    
+    # Read todo
+    response = requests.get(f"{BASE_URL}/todos/{todo_id}")
+    assert response.status_code == 200
+    print("✓ Database Lab tests passed")
+
+if __name__ == "__main__":
+    test_middleware_lab()
+    test_versioning_lab()
+    test_database_lab()
+    print("\nAll tests passed! Check log files for detailed logs.")
+```
+
+### Verification Checklist
+
+After running all tests, verify:
+
+- [ ] All endpoints return expected responses
+- [ ] Log files are created in each lab's `logs/` directory
+- [ ] Console output shows log messages
+- [ ] Exception handling works correctly
+- [ ] Rate limiting is logged properly
+- [ ] Database operations are logged
+- [ ] Background tasks are logged
+- [ ] Error scenarios are logged with details
+- [ ] CustomException returns proper JSON responses
+- [ ] Log format is consistent across all labs
 
 ---
 
@@ -904,10 +1730,10 @@ def test_create_todo():
 
 ### 1. Logging
 
-```python
-import logging
+Our implementation uses a centralized logger utility:
 
-logger = logging.getLogger(__name__)
+```python
+from utils.logger import logger
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -916,6 +1742,13 @@ async def log_requests(request: Request, call_next):
     logger.info(f"Response: {response.status_code}")
     return response
 ```
+
+**Key Features:**
+- Dual output (file + console)
+- Timestamped log files
+- Structured format with line numbers
+- Automatic directory creation
+- Production-ready configuration
 
 ### 2. Metrics
 
@@ -949,6 +1782,7 @@ Each lab demonstrates production-ready patterns that you can adapt to your own p
 - **Middleware** provides a clean way to implement cross-cutting concerns
 - **Versioning** is essential for API evolution and backward compatibility
 - **Dependency Injection** makes code testable and maintainable
+- **Logging and Exception Handling** are critical for production applications
 - **Docker** provides consistent deployment across environments
 - **Testing** is crucial at all levels (unit, integration, E2E)
 
@@ -958,8 +1792,10 @@ Each lab demonstrates production-ready patterns that you can adapt to your own p
 2. Add more complex database relationships
 3. Implement caching strategies
 4. Set up CI/CD pipelines
-5. Add monitoring and observability
-6. Scale with multiple workers and load balancing
+5. Enhance logging with structured formats (JSON)
+6. Integrate with log aggregation tools (ELK, Splunk)
+7. Add distributed tracing
+8. Scale with multiple workers and load balancing
 
 ### Resources
 
